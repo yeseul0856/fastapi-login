@@ -5,6 +5,10 @@ from sqlalchemy.orm import declarative_base, Session
 # 데이터 타입이 맞는지 검사하는 라이브러리
 from pydantic import BaseModel
 from supabase import create_client, ClientOptions
+#fastapi안에 있는 security라는 모듈?
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+# 주소를 만나면 다른 사이트로 바로 연결해준다 
+from fastapi.responses import RedirectResponse
 
 DATABASE_URL = "postgresql://postgres.sjcqhzgjpoplxtqoqeyv:kWJUbef9Q0p74Aox@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres"
 
@@ -22,14 +26,15 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY, options=ClientOptions(flow_
 class Profile(Base):
     # users가 테이블 이름이다 
     __tablename__ = "profiles"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String(50), primary_key=True, index=True)
     username = Column(String(50), unique=True, index=True)
     email = Column(String(120))
     provider = Column(String(50))
 
 # 회원가입할때 받을것
 class EmailForm(BaseModel):
-    username: str
+    # username이 없어도 되겠금 빈값을 디폴트로 설정함, id를 email로 하겠습니다 
+    username: str = ""
     email: str
     password: str
 
@@ -56,7 +61,7 @@ def save_profile(db: Session, user, username, provider):
     # get은 하나만 가져온다 
     profile = db.get(Profile, user.id)
     if profile is None:
-        Profile(id=user.id, email=user.email, username=username, provider=provider)
+        profile = Profile(id=user.id, email=user.email, username=username, provider=provider)
         db.add(profile)
         db.commit()
         db.refresh(profile)
@@ -77,3 +82,68 @@ def signup(form: EmailForm, db: Session=Depends(get_db)):
         "email": profile.email,
         "username": profile.username
     }
+
+
+# 로그인 post가 메소드이면 실행이 된다 
+# supabase에서 이렇게 적는걸로 로그인이 되게 제공한다 
+@app.post("/login")
+# 클래스 EmailForm
+def login(form: EmailForm):
+    try:
+        #auth안에 sign_in_with_password메서드가 있다 
+        res = supabase.auth.sign_in_with_password({
+            "email": form.email,
+            "password": form.password
+        })
+    except:
+        raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 잘못되었습니다.")
+    # 맞으면
+    return {
+        "access_token": res.session.access_token
+    }
+
+@app.get("/profiles")
+def read_profiles(db: Session = Depends(get_db)):
+    profiles = db.query(Profile).all()
+    return [
+        {"id": profile.id, 
+         "email":profile.email, 
+         "username": profile.username, 
+         "provider": profile.provider
+         } for profile in profiles
+    ]
+
+#HTTPBearer 객체를 만들었따
+bearer = HTTPBearer()
+
+@app.get("/me")
+def me(cred: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(get_db)):
+    # supabase에 auth속성 안에 get_user라는 메소드
+    # 맞으면 try
+    try:
+        user = supabase.auth.get_user(cred.credentials).user
+    # 틀리면 except
+    except:
+        raise HTTPException(status_coe=401, detail="토큰이 잘못되었습니다.")
+
+
+    profile = db.get(Profile, user.id)
+
+    if profile is None:
+        raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 잘못되었습니다.")
+
+    return {
+        "id": profile.id,
+        "username": profile.username,
+        "email": profile.email,
+        "provider": profile.provider
+    }
+
+# 카카오 로그인
+@app.get("/login/kakao")
+def login_kakao():
+    res = supabase.auth.sign_in_with_oauth({
+        "provider": "kakao",
+        "options":{"redirect_to": "http://127.0.0.1:8000/auth/callback"}
+    })
+    return RedirectResponse(res.url)
